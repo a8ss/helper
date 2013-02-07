@@ -1,20 +1,20 @@
 <?php
 /**
- * 蜘蛛程序
+ *
  * 例：
  *
-    $data = array(
-        'url' => 'www.baidu.com',
-    );
-    $sp = new Spider($data);
-    if($sp->send()){
-        echo $sp->getBody();
-    }
+$data = array(
+'url' => 'www.baidu.com',
+);
+$sp = new Spider($data);
+if($sp->send()){
+echo $sp->getBody();
+}
  */
 class Spider
 {
 
-    private $postData;
+    private $postData = array();
 
     /**
      * HTTP请求头
@@ -60,12 +60,10 @@ class Spider
         }
         // 处理URL
         $parse = parse_url($url);
-        $this->requestHeaders['Host'] = $parse ['host'];
+        $this->requestHeaders['Host'] = isset($parse ['host']) ? $parse ['host'] : die('域名解析错误');
         $this->requestHeaders['Uri'] = isset ($parse ['path']) ? $parse ['path'] : '/';
-        if (isset ($parse ['port'])) {
-            $this->requestHeaders['Port'] = $parse ['port'];
-            $this->requestHeaders['Host'] = $this->requestHeaders['Host'] . ':' . $parse ['port'];
-        }
+        $this->requestHeaders['Port'] = isset($parse ['port']) ? $parse ['port'] : null;
+
 
         // 读取Cookie
         if (!is_dir($this->cookieDir)) {
@@ -88,8 +86,23 @@ class Spider
     public function send()
     {
 
+        //post数据
+        if (strtolower($this->requestHeaders['Method']) == 'post' && !empty($this->postData)) {
+            $postStr = '';
+            foreach ($this->postData as $key => $value) {
+                $postStr .= $key . '=' . urlencode($value) . '&';
+            }
+            $postStr = rtrim($postStr, '&');
+            //Content-Length: 29
+            $this->requestHeaders['Content-Length'] = strlen($postStr);
+        }
+
         $requestStr = "{$this->requestHeaders['Method']} {$this->requestHeaders['Uri']} HTTP/{$this->requestHeaders['Version']}\r\n";
         foreach ($this->requestHeaders as $key => $value) {
+            if ($key == 'Host' && (!empty($this->requestHeaders['Port']))) {
+                $requestStr .= $key . ": " . $value . ':' . $this->requestHeaders['Port'] . "\r\n";
+                continue;
+            }
             if ($key != 'Method' && $key != 'Uri' && $key != 'Version' && $key != 'Port') {
                 $requestStr .= $key . ": " . $value . "\r\n";
             }
@@ -104,14 +117,9 @@ class Spider
             $requestStr .= "\r\n";
         }
 
-        //post数据
-        if (strtolower($this->requestHeaders['Method']) == 'post') {
+        $requestStr .= empty($postStr) ? "\r\n" : "\r\n" . $postStr;
 
-        }
-
-
-        $requestStr .= "\r\n";
-        $fp = fsockopen($this->requestHeaders['Host']);
+        $fp = fsockopen($this->requestHeaders['Host'], $this->requestHeaders['Port'], $errno, $errmsg, 30);
         if ($fp) {
 
             fwrite($fp, $requestStr);
@@ -134,8 +142,12 @@ class Spider
              * 如果使用GZIP在这里处理。。。。。。
              *
              **/
-
-            $this->responseBody = substr($content, $flag);
+            $this->responseBody = trim(substr($content, $flag));
+            if (isset($this->responseHeader['Type']) && strtolower($this->responseHeader['Type']) == 'text/html') {
+                if (isset($this->responseHeader['Content-Encoding']) && (strtolower($this->responseHeader['Content-Encoding']) == 'gzip')) {
+                    //GZIP压缩格式处理
+                }
+            }
 
 
             //如果头信息中没有charset
@@ -147,20 +159,21 @@ class Spider
                 }
             }
 
-            if ($this->responseHeader ['Charset'] != 'utf-8') {
+            if (isset($this->responseHeader ['Charset']) && $this->responseHeader ['Charset'] != 'utf-8') {
                 $this->responseBody = mb_convert_encoding($this->responseBody, 'utf-8', $this->responseHeader['Charset']);
             }
 
             return true;
         } else {
             // Error!
-            $this->writeErrLog('检查请求地址', __LINE__);
+            $this->writeErrLog($errno . $errmsg . ' 检查请求地址', __LINE__);
             return false;
         }
     }
 
 
-    public function getBody(){
+    public function getBody()
+    {
         return $this->responseBody;
     }
 
@@ -172,6 +185,8 @@ class Spider
      */
     private function resolveHeader($header)
     {
+        file_put_contents('thisHeaderStr.txt', $header);
+
         // 处理第一行
         $pattern = '/HTTP\/1.\d\s(?<code>\d{3})\s(?<codeStr>[\w ]+)[\r\n]/i';
         preg_match($pattern, $header, $mat);
@@ -179,7 +194,7 @@ class Spider
         $this->responseHeader['codeStr'] = $mat['codeStr'];
 
         // 之后的
-        $pattern = '/([\w-_]+?):\s(.*)[\r\n]/i';
+        $pattern = '/([\w-_]+?):\s([^\s]+)[\r\n]?/i';
         preg_match_all($pattern, $header, $mat);
         $this->responseHeader = array_merge(array_combine($mat [1], $mat [2]), $this->responseHeader);
 
@@ -229,14 +244,16 @@ class Spider
      * @param string $value
      * @return bool
      */
-    public function setRequestHeaders($key = '', $value = '')
+    public function setRequestHeaders($key, $value)
     {
-        if (!empty($key) && !empty($value)){
-            $this->requestHeaders [$key] = $value;
-            return true;
+
+        if ($key == 'Method' && strtolower($value) == 'post') {
+            //Content-Type: application/x-www-form-urlencoded
+            $this->requestHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
         }
-        else
-            return false;
+
+        $this->requestHeaders [$key] = $value;
+        return true;
     }
 
     /**
@@ -245,7 +262,12 @@ class Spider
      */
     public function setPostData($data)
     {
-
+        if (is_array($data)) {
+            $this->postData = array_merge($this->postData, $data);
+            return true;
+        } else {
+            return false;
+        }
     }
 
     /**
@@ -283,5 +305,4 @@ class Spider
         //增加写权限判断
         file_put_contents('sperrorlog.log', $content, FILE_APPEND);
     }
-
 }
