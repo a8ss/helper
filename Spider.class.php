@@ -2,17 +2,29 @@
 /**
  *
  * 例：
+ * $url = 'xxx.com:80/a.php';//请求地址
+ * $postdata = array('a' => 332, 'b' => 'value');//如果有POST数据，请使用关联数组
  *
-$data = array(
-'url' => 'www.baidu.com',
-);
-$sp = new Spider($data);
-if($sp->send()){
-echo $sp->getBody();
-}
+ * $sp = new Spider($url);
+ * $sp->setPostData($postdata); //如果post方式 设置post数据
+ * $sp->setBrowser('ie');   //模拟客户端信息 取值：chrome、firefox、ie 默认chrome
+ *
+ * //发送请求 返回请求状态码（HTTP状态码）
+ * if ($sp->send() == 200) {
+ *      echo $sp->getBody();
+ * }
+ *
+ * //获得相应头信息。Type：HTTP头中的Content-type 可能值：text/html  text/js  text/css
+ * $sp->getResponseHeader('Type');
+ *
  */
 class Spider
 {
+    private $requestHost;
+    private $requestUri;
+    private $requestPort;
+    private $requestMethod = 'GET';
+    private $httpVersion = '1.1';
 
     private $postData = array();
 
@@ -21,10 +33,6 @@ class Spider
      * @var array
      */
     private $requestHeaders = array(
-        'Method' => 'GET',
-        'Uri' => '/',
-        'Version' => '1.1',
-        'Host' => '',
         'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language' => 'zh-CN,zh;q=0.8',
         'Accept-Charset' => 'GBK,utf-8;q=0.7,*;q=0.3',
@@ -46,30 +54,38 @@ class Spider
     private $fileCookie; // 当前COOKIE存储的文件
     public $cookieDir = 'cookie/'; // cookie保存的文件夹,需要以 / 结尾
 
+
+    public $errorMsg = '';
+
+
     /**
-     * 给我一个网址 还给你内容
      *
      * @param String $url
-     *            例子：http://translate.google.cn 或 translate.google.cn
+     *
+     *
      */
     public function __construct($url)
     {
-        $url = is_array($url) ? $url['url'] : $url;
         if (0 !== strpos($url, 'http')) {
             $url = 'http://' . $url;
         }
         // 处理URL
         $parse = parse_url($url);
-        $this->requestHeaders['Host'] = isset($parse ['host']) ? $parse ['host'] : die('域名解析错误');
-        $this->requestHeaders['Uri'] = isset ($parse ['path']) ? $parse ['path'] : '/';
-        $this->requestHeaders['Port'] = isset($parse ['port']) ? $parse ['port'] : null;
+        $this->requestHost = $parse ['host'];
+        $this->requestUri = isset ($parse ['path']) ? $parse ['path'] : '/';
+        $this->requestPort = isset ($parse ['port']) ? $parse ['port'] : 80;
+        if ($this->requestPort == 80) {
+            $this->setRequestHeaders('Host', $this->requestHost);
+        } else {
+            $this->setRequestHeaders('Host', $this->requestHost . ':' . $this->requestPort);
+        }
 
 
         // 读取Cookie
         if (!is_dir($this->cookieDir)) {
             mkdir($this->cookieDir, 755, true);
         }
-        $this->fileCookie = $this->cookieDir . $this->requestHeaders['Host'] . '.cookie';
+        $this->fileCookie = $this->cookieDir . $this->requestHost . '.cookie';
         if (file_exists($this->fileCookie)) {
             // 判断是否过期，默认三天
             if (fileatime($this->fileCookie) + 259200 > time()) {
@@ -87,25 +103,20 @@ class Spider
     {
 
         //post数据
-        if (strtolower($this->requestHeaders['Method']) == 'post' && !empty($this->postData)) {
+        if ($this->requestMethod == 'POST' && !empty($this->postData)) {
             $postStr = '';
             foreach ($this->postData as $key => $value) {
                 $postStr .= $key . '=' . urlencode($value) . '&';
             }
             $postStr = rtrim($postStr, '&');
             //Content-Length: 29
-            $this->requestHeaders['Content-Length'] = strlen($postStr);
+            $this->setRequestHeaders('Content-Length', strlen($postStr));
         }
 
-        $requestStr = "{$this->requestHeaders['Method']} {$this->requestHeaders['Uri']} HTTP/{$this->requestHeaders['Version']}\r\n";
+        $requestStr = "{$this->requestMethod} {$this->requestUri} HTTP/{$this->httpVersion}\r\n";
+
         foreach ($this->requestHeaders as $key => $value) {
-            if ($key == 'Host' && (!empty($this->requestHeaders['Port']))) {
-                $requestStr .= $key . ": " . $value . ':' . $this->requestHeaders['Port'] . "\r\n";
-                continue;
-            }
-            if ($key != 'Method' && $key != 'Uri' && $key != 'Version' && $key != 'Port') {
-                $requestStr .= $key . ": " . $value . "\r\n";
-            }
+            $requestStr .= $key . ": " . $value . "\r\n";
         }
 
         if (!empty ($this->cookies)) {
@@ -119,7 +130,7 @@ class Spider
 
         $requestStr .= empty($postStr) ? "\r\n" : "\r\n" . $postStr;
 
-        $fp = fsockopen($this->requestHeaders['Host'], $this->requestHeaders['Port'], $errno, $errmsg, 30);
+        $fp = fsockopen($this->requestHost, $this->requestPort, $errno, $this->errorMsg, 30);
         if ($fp) {
 
             fwrite($fp, $requestStr);
@@ -163,10 +174,9 @@ class Spider
                 $this->responseBody = mb_convert_encoding($this->responseBody, 'utf-8', $this->responseHeader['Charset']);
             }
 
-            return true;
+            return $this->responseHeader['Code'];
         } else {
             // Error!
-            $this->writeErrLog($errno . $errmsg . ' 检查请求地址', __LINE__);
             return false;
         }
     }
@@ -177,6 +187,17 @@ class Spider
         return $this->responseBody;
     }
 
+    public function getResponseHeader($key = '')
+    {
+        if (empty($key))
+            return $this->responseHeader;
+        elseif (isset($this->responseHeader[$key])) {
+            return $this->responseHeader[$key];
+        } else {
+            return false;
+        }
+
+    }
 
     /**
      * 解析头信息
@@ -185,13 +206,11 @@ class Spider
      */
     private function resolveHeader($header)
     {
-        file_put_contents('thisHeaderStr.txt', $header);
-
         // 处理第一行
-        $pattern = '/HTTP\/1.\d\s(?<code>\d{3})\s(?<codeStr>[\w ]+)[\r\n]/i';
+        $pattern = '/HTTP\/1.\d\s(?<Code>\d{3})\s(?<Codestr>[\w ]+)[\r\n]/i';
         preg_match($pattern, $header, $mat);
-        $this->responseHeader['code'] = $mat['code'];
-        $this->responseHeader['codeStr'] = $mat['codeStr'];
+        $this->responseHeader['Code'] = $mat['Code'];
+        $this->responseHeader['Codestr'] = $mat['Codestr'];
 
         // 之后的
         $pattern = '/([\w-_]+?):\s([^\s]+)[\r\n]?/i';
@@ -230,7 +249,7 @@ class Spider
     {
         if (false !== file_put_contents($this->cookieDir . $this->requestHeaders['Host'] . '.cookie', serialize($this->cookies))) {
             // Cookie保存失败！请检查
-            $this->writeErrLog('保存Cookie失败', __LINE__);
+            $this->errorMsg = '保存Cookie失败';
             return false;
         } else {
             return true;
@@ -246,12 +265,13 @@ class Spider
      */
     public function setRequestHeaders($key, $value)
     {
-
-        if ($key == 'Method' && strtolower($value) == 'post') {
+        $key = ucfirst($key);
+        if ($key == 'Method' && strtoupper($value) == 'POST') {
+            $this->requestMethod = 'POST';
             //Content-Type: application/x-www-form-urlencoded
             $this->requestHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
+            return true;
         }
-
         $this->requestHeaders [$key] = $value;
         return true;
     }
@@ -259,11 +279,13 @@ class Spider
     /**
      * 设置post数据
      * @param $data
+     * @return bool
      */
     public function setPostData($data)
     {
         if (is_array($data)) {
             $this->postData = array_merge($this->postData, $data);
+            $this->setRequestHeaders('Method','POST');
             return true;
         } else {
             return false;
@@ -273,36 +295,24 @@ class Spider
     /**
      * 设置浏览器类型默认0 Google Chrome
      *
-     * @param INT $browserID
+     * @param String $browser
      *            0:google chrome,1:Mozilla Firefox,2:IE8
      */
-    public function setBrowser($browserID)
+    public function setBrowser($browser)
     {
-
-        switch ($browserID) {
-            case 0 :
-                $this->requestHeaders['User-Agent'] = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.56 Safari/537.17\r\n";
+        $browser = strtolower($browser);
+        switch ($browser) {
+            case 'chrome' :
+                $this->setRequestHeaders('User-Agent', "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.56 Safari/537.17");
                 break;
-            case 2 :
-                $this->requestHeaders['User-Agent'] = "Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; WOW64; Trident/4.0; SLCC2; .NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; Media Center PC 6.0; .NET4.0C; .NET4.0E)\r\n";
+            case 'firefox' :
+                $this->setRequestHeaders('User_Agent', "User-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; rv:18.0) Gecko/20100101 Firefox/18.0");
                 break;
+            case 'ie' :
+                $this->setRequestHeaders('User-Agent', "Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; WOW64; Trident/4.0; SLCC2; .NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; Media Center PC 6.0; .NET4.0C; .NET4.0E)");
+                break;
+            default:
+                $this->setRequestHeaders('User-Agent', "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.17 (KHTML, like Gecko) Chrome/24.0.1312.56 Safari/537.17");
         }
-    }
-
-    /**
-     * 记录错误日志
-     */
-    private function writeErrLog($msg, $line = NULL)
-    {
-        $content = date('Y-m-d H:i:s', time()) . '    ';
-        $content .= $msg . '    ';
-
-        if (isset ($line))
-            $content .= $line . '行    ';
-
-        $content .= $this->requestHeaders['Host'] . $this->requestHeaders['Uri'] . "\r\n";
-
-        //增加写权限判断
-        file_put_contents('sperrorlog.log', $content, FILE_APPEND);
     }
 }
